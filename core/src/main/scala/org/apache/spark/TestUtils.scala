@@ -31,7 +31,7 @@ import com.google.common.io.Files
  * projects.
  *
  * TODO: See if we can move this to the test codebase by specifying
- * test dependencies between projects. 
+ * test dependencies between projects.
  */
 private[spark] object TestUtils {
 
@@ -43,6 +43,7 @@ private[spark] object TestUtils {
    */
   def createJarWithClasses(classNames: Seq[String], value: String = ""): URL = {
     val tempDir = Files.createTempDir()
+    tempDir.deleteOnExit()
     val files = for (name <- classNames) yield createCompiledClass(name, tempDir, value)
     val jarFile = new File(tempDir, "testJar-%s.jar".format(System.currentTimeMillis()))
     createJar(files, jarFile)
@@ -100,9 +101,14 @@ private[spark] object TestUtils {
 
     val fileName = className + ".class"
     val result = new File(fileName)
-    if (!result.exists()) throw new Exception("Compiled file not found: " + fileName)
+    assert(result.exists(), "Compiled file not found: " + result.getAbsolutePath())
     val out = new File(destDir, fileName)
-    result.renameTo(out)
+
+    // renameTo cannot handle in and out files in different filesystems
+    // use google's Files.move instead
+    Files.move(result, out)
+
+    assert(out.exists(), "Destination file not moved: " + out.getAbsolutePath())
     out
   }
 }

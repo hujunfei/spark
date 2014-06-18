@@ -28,8 +28,6 @@ abstract class Expression extends TreeNode[Expression] {
   /** The narrowest possible type that is produced when this expression is evaluated. */
   type EvaluatedType <: Any
 
-  def dataType: DataType
-
   /**
    * Returns true when an expression is a candidate for static evaluation before the query is
    * executed.
@@ -44,7 +42,6 @@ abstract class Expression extends TreeNode[Expression] {
    *  - A [[expressions.Cast Cast]] or [[expressions.UnaryMinus UnaryMinus]] is foldable if its
    *    child is foldable.
    */
-  // TODO: Supporting more foldable expressions. For example, deterministic Hive UDFs.
   def foldable: Boolean = false
   def nullable: Boolean
   def references: Set[Attribute]
@@ -54,11 +51,17 @@ abstract class Expression extends TreeNode[Expression] {
 
   /**
    * Returns `true` if this expression and all its children have been resolved to a specific schema
-   * and `false` if it is still contains any unresolved placeholders. Implementations of expressions
+   * and `false` if it still contains any unresolved placeholders. Implementations of expressions
    * should override this if the resolution of this type of expression involves more than just
    * the resolution of its children.
    */
   lazy val resolved: Boolean = childrenResolved
+
+  /**
+   * Returns the [[types.DataType DataType]] of the result of evaluating this expression.  It is
+   * invalid to query the dataType of an unresolved expression (i.e., when `resolved` == false).
+   */
+  def dataType: DataType
 
   /**
    * Returns true if  all the children of this expression have been resolved to a specific schema
@@ -86,7 +89,7 @@ abstract class Expression extends TreeNode[Expression] {
   }
 
   /**
-   * Evaluation helper function for 2 Numeric children expressions. Those expressions are supposed 
+   * Evaluation helper function for 2 Numeric children expressions. Those expressions are supposed
    * to be in the same data type, and also the return type.
    * Either one of the expressions result is null, the evaluation result should be null.
    */
@@ -120,7 +123,7 @@ abstract class Expression extends TreeNode[Expression] {
   }
 
   /**
-   * Evaluation helper function for 2 Fractional children expressions. Those expressions are  
+   * Evaluation helper function for 2 Fractional children expressions. Those expressions are
    * supposed to be in the same data type, and also the return type.
    * Either one of the expressions result is null, the evaluation result should be null.
    */
@@ -153,7 +156,7 @@ abstract class Expression extends TreeNode[Expression] {
   }
 
   /**
-   * Evaluation helper function for 2 Integral children expressions. Those expressions are  
+   * Evaluation helper function for 2 Integral children expressions. Those expressions are
    * supposed to be in the same data type, and also the return type.
    * Either one of the expressions result is null, the evaluation result should be null.
    */
@@ -186,12 +189,12 @@ abstract class Expression extends TreeNode[Expression] {
   }
 
   /**
-   * Evaluation helper function for 2 Comparable children expressions. Those expressions are  
+   * Evaluation helper function for 2 Comparable children expressions. Those expressions are
    * supposed to be in the same data type, and the return type should be Integer:
    * Negative value: 1st argument less than 2nd argument
    * Zero:  1st argument equals 2nd argument
    * Positive value: 1st argument greater than 2nd argument
-   * 
+   *
    * Either one of the expressions result is null, the evaluation result should be null.
    */
   @inline
@@ -213,7 +216,7 @@ abstract class Expression extends TreeNode[Expression] {
         null
       } else {
         e1.dataType match {
-          case i: NativeType => 
+          case i: NativeType =>
             f.asInstanceOf[(Ordering[i.JvmType], i.JvmType, i.JvmType) => Boolean](
               i.ordering, evalE1.asInstanceOf[i.JvmType], evalE2.asInstanceOf[i.JvmType])
           case other => sys.error(s"Type $other does not support ordered operations")

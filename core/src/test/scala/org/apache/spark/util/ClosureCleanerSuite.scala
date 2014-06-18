@@ -20,7 +20,7 @@ package org.apache.spark.util
 import org.scalatest.FunSuite
 
 import org.apache.spark.LocalSparkContext._
-import org.apache.spark.SparkContext
+import org.apache.spark.{SparkContext, SparkException}
 
 class ClosureCleanerSuite extends FunSuite {
   test("closures inside an object") {
@@ -51,25 +51,17 @@ class ClosureCleanerSuite extends FunSuite {
     assert(obj.run() === 96) // 4 * (1+2+3+4) + 4 * (1+2+3+4) + 16 * 1
   }
   
-  test("capturing free variables in closures at RDD definition") {
-    val obj = new TestCaptureVarClass()
-    val (ones, onesPlusZeroes) = obj.run()
+  test("toplevel return statements in closures are identified at cleaning time") {
+    val ex = intercept[SparkException] {
+      TestObjectWithBogusReturns.run()
+    }
     
-    assert(ones === onesPlusZeroes)
+    assert(ex.getMessage.contains("Return statements aren't allowed in Spark closures"))
   }
 
-  test("capturing free variable fields in closures at RDD definition") {
-    val obj = new TestCaptureFieldClass()
-    val (ones, onesPlusZeroes) = obj.run()
-    
-    assert(ones === onesPlusZeroes)
-  }
-  
-  test("capturing arrays in closures at RDD definition") {
-    val obj = new TestCaptureArrayEltClass()
-    val (observed, expected) = obj.run()
-    
-    assert(observed === expected)
+  test("return statements from named functions nested in closures don't raise exceptions") {
+    val result = TestObjectWithNestedReturns.run()
+    assert(result == 1)
   }
 }
 
@@ -90,7 +82,7 @@ object TestObject {
 
 class TestClass extends Serializable {
   var x = 5
-  
+
   def getX = x
 
   def run(): Int = {
@@ -129,6 +121,30 @@ class TestClassWithoutFieldAccess {
   }
 }
 
+object TestObjectWithBogusReturns {
+  def run(): Int = {
+    withSpark(new SparkContext("local", "test")) { sc =>
+      val nums = sc.parallelize(Array(1, 2, 3, 4))
+      // this return is invalid since it will transfer control outside the closure
+      nums.map {x => return 1 ; x * 2}
+      1
+    }
+  }
+}
+
+object TestObjectWithNestedReturns {
+  def run(): Int = {
+    withSpark(new SparkContext("local", "test")) { sc =>
+      val nums = sc.parallelize(Array(1, 2, 3, 4))
+      nums.map {x => 
+        // this return is fine since it will not transfer control outside the closure
+        def foo(): Int = { return 5; 1 }
+        foo()
+      }
+      1
+    }
+  }
+}
 
 object TestObjectWithNesting {
   def run(): Int = {
@@ -161,53 +177,6 @@ class TestClassWithNesting(val y: Int) extends Serializable {
         answer += nums.map(_ + x + getY).reduce(_ + _)
       }
       answer
-    }
-  }
-}
-
-class TestCaptureFieldClass extends Serializable {
-  class ZeroBox extends Serializable {
-    var zero = 0
-  }
-
-  def run(): (Int, Int) = {
-    val zb = new ZeroBox
-  
-    withSpark(new SparkContext("local", "test")) {sc =>
-      val ones = sc.parallelize(Array(1, 1, 1, 1, 1))
-      val onesPlusZeroes = ones.map(_ + zb.zero)
-
-      zb.zero = 5
-    
-      (ones.reduce(_ + _), onesPlusZeroes.reduce(_ + _))
-    }
-  }
-}
-
-class TestCaptureArrayEltClass extends Serializable {
-  def run(): (Int, Int) = {
-    withSpark(new SparkContext("local", "test")) {sc =>
-      val rdd = sc.parallelize(1 to 10)
-      val data = Array(1, 2, 3)
-      val expected = data(0)
-      val mapped = rdd.map(x => data(0))
-      data(0) = 4
-      (mapped.first, expected)
-    }
-  }
-}
-
-class TestCaptureVarClass extends Serializable {
-  def run(): (Int, Int) = {
-    var zero = 0
-  
-    withSpark(new SparkContext("local", "test")) {sc =>
-      val ones = sc.parallelize(Array(1, 1, 1, 1, 1))
-      val onesPlusZeroes = ones.map(_ + zero)
-
-      zero = 5
-    
-      (ones.reduce(_ + _), onesPlusZeroes.reduce(_ + _))
     }
   }
 }

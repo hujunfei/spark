@@ -19,12 +19,14 @@ package org.apache.spark.sql.execution
 
 import java.util.HashMap
 
+import org.apache.spark.annotation.DeveloperApi
 import org.apache.spark.SparkContext
 import org.apache.spark.sql.catalyst.errors._
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.plans.physical._
 
 /**
+ * :: DeveloperApi ::
  * Groups input data by `groupingExpressions` and computes the `aggregateExpressions` for each
  * group.
  *
@@ -34,6 +36,7 @@ import org.apache.spark.sql.catalyst.plans.physical._
  * @param aggregateExpressions expressions that are computed for each group.
  * @param child the input data source.
  */
+@DeveloperApi
 case class Aggregate(
     partial: Boolean,
     groupingExpressions: Seq[Expression],
@@ -74,8 +77,7 @@ case class Aggregate(
       resultAttribute: AttributeReference)
 
   /** A list of aggregates that need to be computed for each group. */
-  @transient
-  private[this] lazy val computedAggregates = aggregateExpressions.flatMap { agg =>
+  private[this] val computedAggregates = aggregateExpressions.flatMap { agg =>
     agg.collect {
       case a: AggregateExpression =>
         ComputedAggregate(
@@ -86,8 +88,7 @@ case class Aggregate(
   }.toArray
 
   /** The schema of the result of all aggregate evaluations */
-  @transient
-  private[this] lazy val computedSchema = computedAggregates.map(_.resultAttribute)
+  private[this] val computedSchema = computedAggregates.map(_.resultAttribute)
 
   /** Creates a new aggregate buffer for a group. */
   private[this] def newAggregateBuffer(): Array[AggregateFunction] = {
@@ -101,8 +102,7 @@ case class Aggregate(
   }
 
   /** Named attributes used to substitute grouping attributes into the final result. */
-  @transient
-  private[this] lazy val namedGroups = groupingExpressions.map {
+  private[this] val namedGroups = groupingExpressions.map {
     case ne: NamedExpression => ne -> ne.toAttribute
     case e => e -> Alias(e, s"groupingExpr:$e")().toAttribute
   }
@@ -111,16 +111,14 @@ case class Aggregate(
    * A map of substitutions that are used to insert the aggregate expressions and grouping
    * expression into the final result expression.
    */
-  @transient
-  private[this] lazy val resultMap =
-    (computedAggregates.map { agg => agg.unbound -> agg.resultAttribute} ++ namedGroups).toMap
+  private[this] val resultMap =
+    (computedAggregates.map { agg => agg.unbound -> agg.resultAttribute } ++ namedGroups).toMap
 
   /**
    * Substituted version of aggregateExpressions expressions which are used to compute final
    * output rows given a group and the result of all aggregate computations.
    */
-  @transient
-  private[this] lazy val resultExpressions = aggregateExpressions.map { agg =>
+  private[this] val resultExpressions = aggregateExpressions.map { agg =>
     agg.transform {
       case e: Expression if resultMap.contains(e) => resultMap(e)
     }

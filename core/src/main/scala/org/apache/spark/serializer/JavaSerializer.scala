@@ -20,9 +20,12 @@ package org.apache.spark.serializer
 import java.io._
 import java.nio.ByteBuffer
 
+import scala.reflect.ClassTag
+
 import org.apache.spark.SparkConf
 import org.apache.spark.annotation.DeveloperApi
 import org.apache.spark.util.ByteBufferInputStream
+import org.apache.spark.util.Utils
 
 private[spark] class JavaSerializationStream(out: OutputStream, counterReset: Int)
   extends SerializationStream {
@@ -35,7 +38,7 @@ private[spark] class JavaSerializationStream(out: OutputStream, counterReset: In
    * But only call it every 10,000th time to avoid bloated serialization streams (when
    * the stream 'resets' object class descriptions have to be re-written)
    */
-  def writeObject[T](t: T): SerializationStream = {
+  def writeObject[T: ClassTag](t: T): SerializationStream = {
     objOut.writeObject(t)
     if (counterReset > 0 && counter >= counterReset) {
       objOut.reset()
@@ -45,6 +48,7 @@ private[spark] class JavaSerializationStream(out: OutputStream, counterReset: In
     }
     this
   }
+
   def flush() { objOut.flush() }
   def close() { objOut.close() }
 }
@@ -56,12 +60,12 @@ extends DeserializationStream {
       Class.forName(desc.getName, false, loader)
   }
 
-  def readObject[T](): T = objIn.readObject().asInstanceOf[T]
+  def readObject[T: ClassTag](): T = objIn.readObject().asInstanceOf[T]
   def close() { objIn.close() }
 }
 
 private[spark] class JavaSerializerInstance(counterReset: Int) extends SerializerInstance {
-  def serialize[T](t: T): ByteBuffer = {
+  def serialize[T: ClassTag](t: T): ByteBuffer = {
     val bos = new ByteArrayOutputStream()
     val out = serializeStream(bos)
     out.writeObject(t)
@@ -69,13 +73,13 @@ private[spark] class JavaSerializerInstance(counterReset: Int) extends Serialize
     ByteBuffer.wrap(bos.toByteArray)
   }
 
-  def deserialize[T](bytes: ByteBuffer): T = {
+  def deserialize[T: ClassTag](bytes: ByteBuffer): T = {
     val bis = new ByteBufferInputStream(bytes)
     val in = deserializeStream(bis)
     in.readObject().asInstanceOf[T]
   }
 
-  def deserialize[T](bytes: ByteBuffer, loader: ClassLoader): T = {
+  def deserialize[T: ClassTag](bytes: ByteBuffer, loader: ClassLoader): T = {
     val bis = new ByteBufferInputStream(bytes)
     val in = deserializeStream(bis, loader)
     in.readObject().asInstanceOf[T]
@@ -86,7 +90,7 @@ private[spark] class JavaSerializerInstance(counterReset: Int) extends Serialize
   }
 
   def deserializeStream(s: InputStream): DeserializationStream = {
-    new JavaDeserializationStream(s, Thread.currentThread.getContextClassLoader)
+    new JavaDeserializationStream(s, Utils.getContextOrSparkClassLoader)
   }
 
   def deserializeStream(s: InputStream, loader: ClassLoader): DeserializationStream = {

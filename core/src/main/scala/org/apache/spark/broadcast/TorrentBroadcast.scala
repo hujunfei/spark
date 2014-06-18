@@ -19,6 +19,7 @@ package org.apache.spark.broadcast
 
 import java.io.{ByteArrayInputStream, ObjectInputStream, ObjectOutputStream}
 
+import scala.reflect.ClassTag
 import scala.math
 import scala.util.Random
 
@@ -44,7 +45,8 @@ import org.apache.spark.util.Utils
  *  copies of the broadcast data (one per executor) as done by the
  *  [[org.apache.spark.broadcast.HttpBroadcast]].
  */
-private[spark] class TorrentBroadcast[T](@transient var value_ : T, isLocal: Boolean, id: Long)
+private[spark] class TorrentBroadcast[T: ClassTag](
+    @transient var value_ : T, isLocal: Boolean, id: Long)
   extends Broadcast[T](id) with Logging with Serializable {
 
   def getValue = value_
@@ -158,7 +160,7 @@ private[spark] class TorrentBroadcast[T](@transient var value_ : T, isLocal: Boo
   }
 
   def receiveBroadcast(): Boolean = {
-    // Receive meta-info about the size of broadcast data, 
+    // Receive meta-info about the size of broadcast data,
     // the number of chunks it is divided into, etc.
     val metaId = BroadcastBlockId(id, "meta")
     var attemptId = 10

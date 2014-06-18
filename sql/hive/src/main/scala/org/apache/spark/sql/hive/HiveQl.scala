@@ -36,20 +36,20 @@ import scala.collection.JavaConversions._
  * back for Hive to execute natively.  Will be replaced with a native command that contains the
  * cmd string.
  */
-case object NativePlaceholder extends Command
+private[hive] case object NativePlaceholder extends Command
 
-case class DfsCommand(cmd: String) extends Command
+private[hive] case class DfsCommand(cmd: String) extends Command
 
-case class ShellCommand(cmd: String) extends Command
+private[hive] case class ShellCommand(cmd: String) extends Command
 
-case class SourceCommand(filePath: String) extends Command
+private[hive] case class SourceCommand(filePath: String) extends Command
 
-case class AddJar(jarPath: String) extends Command
+private[hive] case class AddJar(jarPath: String) extends Command
 
-case class AddFile(filePath: String) extends Command
+private[hive] case class AddFile(filePath: String) extends Command
 
 /** Provides a mapping from HiveQL statements to catalyst logical plans and expression trees. */
-object HiveQl {
+private[hive] object HiveQl {
   protected val nativeCommands = Seq(
     "TOK_DESCFUNCTION",
     "TOK_DESCTABLE",
@@ -207,17 +207,30 @@ object HiveQl {
   /** Returns a LogicalPlan for a given HiveQL string. */
   def parseSql(sql: String): LogicalPlan = {
     try {
-      if (sql.toLowerCase.startsWith("set")) {
-        NativeCommand(sql)
-      } else if (sql.toLowerCase.startsWith("add jar")) {
+      if (sql.trim.toLowerCase.startsWith("set")) {
+        // Split in two parts since we treat the part before the first "="
+        // as key, and the part after as value, which may contain other "=" signs.
+        sql.trim.drop(3).split("=", 2).map(_.trim) match {
+          case Array("") => // "set"
+            SetCommand(None, None)
+          case Array(key) => // "set key"
+            SetCommand(Some(key), None)
+          case Array(key, value) => // "set key=value"
+            SetCommand(Some(key), Some(value))
+        }
+      } else if (sql.trim.toLowerCase.startsWith("cache table")) {
+        CacheCommand(sql.drop(12).trim, true)
+      } else if (sql.trim.toLowerCase.startsWith("uncache table")) {
+        CacheCommand(sql.drop(14).trim, false)
+      } else if (sql.trim.toLowerCase.startsWith("add jar")) {
         AddJar(sql.drop(8))
-      } else if (sql.toLowerCase.startsWith("add file")) {
+      } else if (sql.trim.toLowerCase.startsWith("add file")) {
         AddFile(sql.drop(9))
-      } else if (sql.startsWith("dfs")) {
+      } else if (sql.trim.startsWith("dfs")) {
         DfsCommand(sql)
-      } else if (sql.startsWith("source")) {
+      } else if (sql.trim.startsWith("source")) {
         SourceCommand(sql.split(" ").toSeq match { case Seq("source", filePath) => filePath })
-      } else if (sql.startsWith("!")) {
+      } else if (sql.trim.startsWith("!")) {
         ShellCommand(sql.drop(1))
       } else {
         val tree = getAst(sql)
@@ -233,6 +246,11 @@ object HiveQl {
       }
     } catch {
       case e: Exception => throw new ParseException(sql, e)
+      case e: NotImplementedError => sys.error(
+        s"""
+          |Unsupported language features in query: $sql
+          |${dumpTree(getAst(sql))}
+        """.stripMargin)
     }
   }
 
@@ -347,7 +365,11 @@ object HiveQl {
   protected def nodeToPlan(node: Node): LogicalPlan = node match {
     // Just fake explain for any of the native commands.
     case Token("TOK_EXPLAIN", explainArgs) if nativeCommands contains explainArgs.head.getText =>
-      NoRelation
+      ExplainCommand(NoRelation)
+    // Create tables aren't native commands due to CTAS queries, but we still don't need to
+    // explain them.
+    case Token("TOK_EXPLAIN", explainArgs) if explainArgs.head.getText == "TOK_CREATETABLE" =>
+      ExplainCommand(NoRelation)
     case Token("TOK_EXPLAIN", explainArgs) =>
       // Ignore FORMATTED if present.
       val Some(query) :: _ :: _ :: Nil =
@@ -676,6 +698,7 @@ object HiveQl {
         case "TOK_RIGHTOUTERJOIN" => RightOuter
         case "TOK_LEFTOUTERJOIN" => LeftOuter
         case "TOK_FULLOUTERJOIN" => FullOuter
+        case "TOK_LEFTSEMIJOIN" => LeftSemi
       }
       assert(other.size <= 1, "Unhandled join clauses.")
       Join(nodeToRelation(relation1),
@@ -772,12 +795,24 @@ object HiveQl {
   val COUNT = "(?i)COUNT".r
   val AVG = "(?i)AVG".r
   val SUM = "(?i)SUM".r
+  val MAX = "(?i)MAX".r
+  val MIN = "(?i)MIN".r
+  val UPPER = "(?i)UPPER".r
+  val LOWER = "(?i)LOWER".r
   val RAND = "(?i)RAND".r
   val AND = "(?i)AND".r
   val OR = "(?i)OR".r
   val NOT = "(?i)NOT".r
   val TRUE = "(?i)TRUE".r
   val FALSE = "(?i)FALSE".r
+  val LIKE = "(?i)LIKE".r
+  val RLIKE = "(?i)RLIKE".r
+  val REGEXP = "(?i)REGEXP".r
+  val IN = "(?i)IN".r
+  val DIV = "(?i)DIV".r
+  val BETWEEN = "(?i)BETWEEN".r
+  val WHEN = "(?i)WHEN".r
+  val CASE = "(?i)CASE".r
 
   protected def nodeToExpr(node: Node): Expression = node match {
     /* Attribute References */
@@ -808,6 +843,12 @@ object HiveQl {
     case Token("TOK_FUNCTIONDI", Token(COUNT(), Nil) :: args) => CountDistinct(args.map(nodeToExpr))
     case Token("TOK_FUNCTION", Token(SUM(), Nil) :: arg :: Nil) => Sum(nodeToExpr(arg))
     case Token("TOK_FUNCTIONDI", Token(SUM(), Nil) :: arg :: Nil) => SumDistinct(nodeToExpr(arg))
+    case Token("TOK_FUNCTION", Token(MAX(), Nil) :: arg :: Nil) => Max(nodeToExpr(arg))
+    case Token("TOK_FUNCTION", Token(MIN(), Nil) :: arg :: Nil) => Min(nodeToExpr(arg))
+
+    /* System functions about string operations */
+    case Token("TOK_FUNCTION", Token(UPPER(), Nil) :: arg :: Nil) => Upper(nodeToExpr(arg))
+    case Token("TOK_FUNCTION", Token(LOWER(), Nil) :: arg :: Nil) => Lower(nodeToExpr(arg))
 
     /* Casts */
     case Token("TOK_FUNCTION", Token("TOK_STRING", Nil) :: arg :: Nil) =>
@@ -841,7 +882,7 @@ object HiveQl {
     case Token("-", left :: right:: Nil) => Subtract(nodeToExpr(left), nodeToExpr(right))
     case Token("*", left :: right:: Nil) => Multiply(nodeToExpr(left), nodeToExpr(right))
     case Token("/", left :: right:: Nil) => Divide(nodeToExpr(left), nodeToExpr(right))
-    case Token("DIV", left :: right:: Nil) => Divide(nodeToExpr(left), nodeToExpr(right))
+    case Token(DIV(), left :: right:: Nil) => Divide(nodeToExpr(left), nodeToExpr(right))
     case Token("%", left :: right:: Nil) => Remainder(nodeToExpr(left), nodeToExpr(right))
 
     /* Comparisons */
@@ -852,20 +893,46 @@ object HiveQl {
     case Token(">=", left :: right:: Nil) => GreaterThanOrEqual(nodeToExpr(left), nodeToExpr(right))
     case Token("<", left :: right:: Nil) => LessThan(nodeToExpr(left), nodeToExpr(right))
     case Token("<=", left :: right:: Nil) => LessThanOrEqual(nodeToExpr(left), nodeToExpr(right))
-    case Token("LIKE", left :: right:: Nil) => Like(nodeToExpr(left), nodeToExpr(right))
-    case Token("RLIKE", left :: right:: Nil) => RLike(nodeToExpr(left), nodeToExpr(right))
-    case Token("REGEXP", left :: right:: Nil) => RLike(nodeToExpr(left), nodeToExpr(right))
+    case Token(LIKE(), left :: right:: Nil) => Like(nodeToExpr(left), nodeToExpr(right))
+    case Token(RLIKE(), left :: right:: Nil) => RLike(nodeToExpr(left), nodeToExpr(right))
+    case Token(REGEXP(), left :: right:: Nil) => RLike(nodeToExpr(left), nodeToExpr(right))
     case Token("TOK_FUNCTION", Token("TOK_ISNOTNULL", Nil) :: child :: Nil) =>
       IsNotNull(nodeToExpr(child))
     case Token("TOK_FUNCTION", Token("TOK_ISNULL", Nil) :: child :: Nil) =>
       IsNull(nodeToExpr(child))
-    case Token("TOK_FUNCTION", Token("IN", Nil) :: value :: list) =>
+    case Token("TOK_FUNCTION", Token(IN(), Nil) :: value :: list) =>
       In(nodeToExpr(value), list.map(nodeToExpr))
+    case Token("TOK_FUNCTION",
+           Token(BETWEEN(), Nil) ::
+           Token("KW_FALSE", Nil) ::
+           target ::
+           minValue ::
+           maxValue :: Nil) =>
+
+      val targetExpression = nodeToExpr(target)
+      And(
+        GreaterThanOrEqual(targetExpression, nodeToExpr(minValue)),
+        LessThanOrEqual(targetExpression, nodeToExpr(maxValue)))
 
     /* Boolean Logic */
     case Token(AND(), left :: right:: Nil) => And(nodeToExpr(left), nodeToExpr(right))
     case Token(OR(), left :: right:: Nil) => Or(nodeToExpr(left), nodeToExpr(right))
     case Token(NOT(), child :: Nil) => Not(nodeToExpr(child))
+
+    /* Case statements */
+    case Token("TOK_FUNCTION", Token(WHEN(), Nil) :: branches) =>
+      CaseWhen(branches.map(nodeToExpr))
+    case Token("TOK_FUNCTION", Token(CASE(), Nil) :: branches) =>
+      val transformed = branches.drop(1).sliding(2, 2).map {
+        case Seq(condVal, value) =>
+          // FIXME (SPARK-2155): the key will get evaluated for multiple times in CaseWhen's eval().
+          // Hence effectful / non-deterministic key expressions are *not* supported at the moment.
+          // We should consider adding new Expressions to get around this.
+          Seq(Equals(nodeToExpr(branches(0)), nodeToExpr(condVal)),
+              nodeToExpr(value))
+        case Seq(elseVal) => Seq(nodeToExpr(elseVal))
+      }.toSeq.reduce(_ ++ _)
+      CaseWhen(transformed)
 
     /* Complex datatype manipulation */
     case Token("[", child :: ordinal :: Nil) =>

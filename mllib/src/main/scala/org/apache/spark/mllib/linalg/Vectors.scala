@@ -17,13 +17,16 @@
 
 package org.apache.spark.mllib.linalg
 
-import java.lang.{Iterable => JavaIterable, Integer => JavaInteger, Double => JavaDouble}
+import java.lang.{Double => JavaDouble, Integer => JavaInteger, Iterable => JavaIterable}
 import java.util.Arrays
 
 import scala.annotation.varargs
 import scala.collection.JavaConverters._
 
-import breeze.linalg.{Vector => BV, DenseVector => BDV, SparseVector => BSV}
+import breeze.linalg.{DenseVector => BDV, SparseVector => BSV, Vector => BV}
+
+import org.apache.spark.mllib.util.NumericParser
+import org.apache.spark.SparkException
 
 /**
  * Represents a numeric vector, whose index type is Int and value type is Double.
@@ -125,16 +128,41 @@ object Vectors {
   }
 
   /**
+   * Parses a string resulted from `Vector#toString` into
+   * an [[org.apache.spark.mllib.linalg.Vector]].
+   */
+  def parse(s: String): Vector = {
+    parseNumeric(NumericParser.parse(s))
+  }
+
+  private[mllib] def parseNumeric(any: Any): Vector = {
+    any match {
+      case values: Array[Double] =>
+        Vectors.dense(values)
+      case Seq(size: Double, indices: Array[Double], values: Array[Double]) =>
+        Vectors.sparse(size.toInt, indices.map(_.toInt), values)
+      case other =>
+       throw new SparkException(s"Cannot parse $other.")
+    }
+  }
+
+  /**
    * Creates a vector instance from a breeze vector.
    */
   private[mllib] def fromBreeze(breezeVector: BV[Double]): Vector = {
     breezeVector match {
       case v: BDV[Double] =>
-        require(v.offset == 0, s"Do not support non-zero offset ${v.offset}.")
-        require(v.stride == 1, s"Do not support stride other than 1, but got ${v.stride}.")
-        new DenseVector(v.data)
+        if (v.offset == 0 && v.stride == 1) {
+          new DenseVector(v.data)
+        } else {
+          new DenseVector(v.toArray)  // Can't use underlying array directly, so make a new one
+        }
       case v: BSV[Double] =>
-        new SparseVector(v.length, v.index, v.data)
+        if (v.index.length == v.used) {
+          new SparseVector(v.length, v.index, v.data)
+        } else {
+          new SparseVector(v.length, v.index.slice(0, v.used), v.data.slice(0, v.used))
+        }
       case v: BV[_] =>
         sys.error("Unsupported Breeze vector type: " + v.getClass.getName)
     }
@@ -169,9 +197,10 @@ class SparseVector(
     val indices: Array[Int],
     val values: Array[Double]) extends Vector {
 
-  override def toString: String = {
-    "(" + size + "," + indices.zip(values).mkString("[", "," ,"]") + ")"
-  }
+  require(indices.length == values.length)
+
+  override def toString: String =
+    "(%s,%s,%s)".format(size, indices.mkString("[", ",", "]"), values.mkString("[", ",", "]"))
 
   override def toArray: Array[Double] = {
     val data = new Array[Double](size)
